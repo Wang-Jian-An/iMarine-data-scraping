@@ -6,6 +6,8 @@ import_or_export:
   - e
   - t
 country: 
+  None: 
+    - None
   AD: 
     - ADALV
   AE: 
@@ -5062,6 +5064,7 @@ country:
     - ZWUTA
   ZZ: 
 goods_category:
+  None: None
   1:
     - "01"
     - "02"
