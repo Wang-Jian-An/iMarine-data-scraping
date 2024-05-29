@@ -12,7 +12,6 @@ from utils.variables import config, request_authorization
 country_port_dict = config["country"]
 goods_category_dict = config["goods_category"]
 
-
 # # 創建一個本地集群並設置工作節點數量
 # cluster = LocalCluster(n_workers=20)  # 設置8個工作節點，可以根據需要調整
 # client = Client(cluster)
@@ -24,10 +23,14 @@ goods_category_dict = config["goods_category"]
 def main():
 
     # Step1. 把水果等交易行情資料合併成一個檔案
-    # vegetable_df = merge_all_vegetable_or_fruit_data(
-    #     folder_path = "./農產品市場交易行情/水果",
-    #     keyword = "水果產品日"
-    # )
+    vegetable_df = merge_all_vegetable_or_fruit_data(
+        folder_path = "./農產品市場交易行情/蔬菜",
+        keyword = "蔬菜產品日"
+    )
+    fruit_df = merge_all_vegetable_or_fruit_data(
+        folder_path = "./農產品市場交易行情/水果",
+        keyword = "水果"
+    )
 
     # Step2. 把蔬菜等交易行情資料合併成一個檔案，並進行 Time shifting 以利模型訓練
     goods_df = merge_all_goods_data(
@@ -62,7 +65,7 @@ def merge_all_goods_data(
         ]
 
         # Step2. 讀取與出口相關檔案
-        dd_table = dd.read_parquet(fit_file_name, npartitions = 20)
+        dd_table = dd.read_parquet(fit_file_name[:10])
 
         # Step3. 排除重複資料，並重新設定 Index
         dd_table = dd_table.drop_duplicates().reset_index(drop = True)
@@ -97,15 +100,16 @@ def merge_all_goods_data(
         destination_port = dd_import_table["TW"], 
         source_region = dd_import_table["IC"],
         destination_region = "TW",
-        year = dd_export_table["YM"].apply(
+        year = dd_import_table["YM"].apply(
             lambda x: x.split("/")[0],
-            meta = dd_export_table["YM"]
+            meta = dd_import_table["YM"]
         ).astype("int"),
-        month = dd_export_table["YM"].apply(
+        month = dd_import_table["YM"].apply(
             lambda x: x.split("/")[1][1] if x.split("/")[1][0] == "0" else x.split("/")[1],
-            meta = dd_export_table["YM"]
+            meta = dd_import_table["YM"]
         ).astype("int")
     )    
+
 
     # 將各國港口合併總計
     dd_export_table = dd_export_table.groupby(
@@ -138,7 +142,7 @@ def merge_all_goods_data(
 
     # Step4. 產生所有時間段的虛擬資料，並與原始資料合併
     year = list(range(2016, 2023))
-    month = list(range(1, 12))
+    month = list(range(1, 13))
     year_month_list = [
         *[
             (i, j)
@@ -151,23 +155,24 @@ def merge_all_goods_data(
             "year": i[0],
             "month": i[1],
             "WT_zero": 0,
-            "import_or_export": "e",
+            "import_or_export": "export",
             "source_region": k,
             "source_port": l,
             "destination_region": m,
-            "C1": n,
-            "C2": o
+            "C1": str(n),
+            "C2": str(o)
         }
-        for i, k, l, m, n, o in tqdm.contrib.itertools.product(
+        for i, k, l, m, (n, n_values) in tqdm.contrib.itertools.product(
             year_month_list,
             dd_export_table["source_region"].unique().compute().tolist(),
             dd_export_table["source_port"].unique().compute().tolist(),
             dd_export_table["destination_region"].unique().compute().tolist(),
-            dd_export_table["C1"].unique().compute().tolist(),
-            dd_export_table["C2"].unique().compute().tolist()
+            goods_category_dict.items()
         )
+        if not(n == "None")
+        for o in n_values
     ]
-    dd_export_empty_table = dd.from_pandas(pd.DataFrame(empty_data), npartitions = 20).to_dask_dataframe()
+    dd_export_empty_table = dd.from_pandas(pd.DataFrame(empty_data)).to_legacy_dataframe()
 
     dd_export_table = dd_export_table.merge(
         right = dd_export_empty_table,
@@ -178,29 +183,41 @@ def merge_all_goods_data(
         WT = dd_export_table["WT"].fillna(0.0) + dd_export_table["WT_zero"]
     )
     dd_export_table = dd_export_table.drop(columns = "WT_zero")
+    dd_export_table = dd_export_table.sort_values(
+        by = [
+            "import_or_export",
+            "source_region",
+            "source_port",
+            "destination_region",
+            "C1",
+            "C2",
+            "year", 
+            "month"
+        ]
+    ).reset_index(drop = True)
 
     empty_data = [
         {
             "year": i[0],
             "month": i[1],
             "WT_zero": 0,
-            "import_or_export": "e",
+            "import_or_export": "import",
             "source_region": k,
             "destination_region": l,
             "destination_port": m,
-            "C1": n,
-            "C2": o
+            "C1": str(n),
+            "C2": str(o)
         }
-        for i, k, l, m, n, o in tqdm.contrib.itertools.product(
+        for i, k, l, m, (n, o) in tqdm.contrib.itertools.product(
             year_month_list,
             dd_import_table["source_region"].unique().compute().tolist(),
             dd_import_table["destination_region"].unique().compute().tolist(),
             dd_import_table["destination_port"].unique().compute().tolist(),
-            dd_import_table["C1"].unique().compute().tolist(),
-            dd_import_table["C2"].unique().compute().tolist()
+            goods_category_dict.items()
         )
+        if not(n == "None")
     ]
-    dd_import_empty_table = dd.from_pandas(pd.DataFrame(empty_data), npartitions = 20).to_dask_dataframe()
+    dd_import_empty_table = dd.from_pandas(pd.DataFrame(empty_data)).to_legacy_dataframe()
 
     dd_import_table = dd_import_table.merge(
         right = dd_import_empty_table,
@@ -211,50 +228,117 @@ def merge_all_goods_data(
         WT = dd_import_table["WT"].fillna(0.0) + dd_import_table["WT_zero"]
     )
     dd_import_table = dd_import_table.drop(columns = "WT_zero")
-
-    # 把進口與出口的資料合併
-    dd_table = dd.concat(
-        [dd_export_table, dd_import_table],
-        axis = 0
-    ).reset_index(drop = True)
+    dd_import_table = dd_import_table.sort_values(
+        by = [
+            "import_or_export",
+            "source_region",
+            "destination_region",
+            "destination_port", 
+            "C1",
+            "C2",
+            "year", 
+            "month"
+        ]
+    ).reset_index(drop = True)  
 
     # Step5. 依照進出口、來源國、來源港口、目的地國、目的地港口、貨物大類與貨物小類，將貨物重量往後推移一個
-    dd_table_start = dd_table.groupby(
+    dd_export_table_start = dd_export_table.groupby(
         by = [
             "import_or_export", 
             "source_region", 
             "source_port", 
             "destination_region", 
-            "destination_port",
             "C1",
             "C2"
-        ],
-        as_index = False
+        ]
     )
-    dd_table_start = dd_table_start.apply(
+    dd_export_table_start = dd_export_table_start.apply(
         lambda x: x.sort_values(by = ["year", "month"])
-    )[["year", "month", "WT"]]
-    print(dd_table_start.head(20))
-    dd_table_start = dd_table_start[["year", "month", "WT"]].shift(periods = 1)
-    dd_table_start = dd_table_start.reset_index()
-    
-    
-    # # Step6. 把起點與終點的貨物重量混合在一起
-    # dd_table = dd.merge(
-    #     left = dd_table,
-    #     right = dd_table_start,
-    #     how = "inner",
-    #     on = [
-    #         "import_or_export", 
-    #         "source_region", 
-    #         "source_port", 
-    #         "destination_region", 
-    #         "destination_port"
-    #     ]
-    # )
-    # print(dd_table.head())
+    )[["year", "month", "WT"]]    
+    dd_export_table_start = dd_export_table_start[["year", "month", "WT"]].shift(periods = 1)
+    dd_export_table_start = dd_export_table_start.reset_index()
+    dd_export_table_start = dd_export_table_start.drop(columns = [i for i in dd_export_table_start.columns if "level" in i])
+    dd_export_table_start = dd_export_table_start.sort_values(
+        by = [
+            "import_or_export",
+            "source_region",
+            "source_port",
+            "destination_region",
+            "C1",
+            "C2",
+            "year", 
+            "month"
+        ]
+    )
 
-    return 
+    dd_import_table_start = dd_import_table.groupby(
+        by = [
+            "import_or_export", 
+            "source_region", 
+            "destination_region", 
+            "destination_port", 
+            "C1",
+            "C2"
+        ]
+    )
+    dd_import_table_start = dd_import_table_start.apply(
+        lambda x: x.sort_values(by = ["year", "month"])
+    )[["year", "month", "WT"]]    
+    dd_import_table_start = dd_import_table_start[["year", "month", "WT"]].shift(periods = 1)
+    dd_import_table_start = dd_import_table_start.reset_index()
+    dd_import_table_start = dd_import_table_start.drop(columns = [i for i in dd_import_table_start.columns if "level" in i])    
+    dd_import_table_start = dd_import_table_start.sort_values(
+        by = [
+            "import_or_export",
+            "source_region",
+            "destination_region",
+            "destination_port", 
+            "C1",
+            "C2",
+            "year", 
+            "month"
+        ]
+    ) 
+
+    # Step6. 把起點與終點的貨物重量混合在一起
+    dd_export_table = dd_export_table.reset_index()
+    dd_export_table_start = dd_export_table_start.reset_index()
+    dd_export_table = dd.merge(
+        left = dd_export_table,
+        right = dd_export_table_start,
+        how = "inner",
+        on = [
+            "import_or_export",
+            "source_region",
+            "source_port", 
+            "destination_region",
+            "C1",
+            "C2",
+            "index"
+        ]
+    )
+    dd_export_table = dd_export_table.drop(columns = "index")
+
+    dd_import_table = dd_import_table.reset_index()
+    dd_import_table_start = dd_import_table_start.reset_index()
+    dd_import_table = dd.merge(
+        left = dd_import_table,
+        right = dd_import_table_start,
+        how = "inner",
+        on = [
+            "import_or_export",
+            "source_region",
+            "destination_region",
+            "destination_port", 
+            "C1",
+            "C2",
+            "index"
+        ]
+    )
+    dd_import_table = dd_import_table.drop(columns = "index")
+
+    print(dd_export_table.head())
+    return dd_export_table, dd_import_table
 
 def read_excel_file_for_vegetable_and_fruit(
     file_name: str, 
@@ -332,10 +416,8 @@ def merge_all_vegetable_or_fruit_data(
             "交易量(公斤)": list
         }
     ).reset_index()
-
     print(dd_table.head())
-    print(dd_table.info(verbose = True))
-    return 
+    return dd_table
 
 def merge_vegetable_data(
     main_df: pd.DataFrame,
